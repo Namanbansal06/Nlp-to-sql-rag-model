@@ -38,8 +38,8 @@ for chat in st.session_state.history:
         st.write(chat["user"])
     with st.chat_message("assistant"):
         st.markdown(f"**Generated SQL:**\n```sql\n{chat['sql']}\n```")
-        st.write("📂 **Tables used:**", chat["tables"])
+        # st.write("📂 **Tables used:**", chat["tables"])
         if chat["results"]:
             st.dataframe(chat["results"])
         else:
-            st.info("⚠️ No results or query failed.")
+            st.info("⚠️ Only read-only queries (SELECT/SHOW/DESCRIBE/EXPLAIN) are allowed.. \n No Result Found")
