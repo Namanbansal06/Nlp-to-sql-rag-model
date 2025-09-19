@@ -1,16 +1,18 @@
 # 💬 SQL Assistant (Gemini + MySQL RDS)
 
-A conversational **SQL Assistant** built with **Streamlit** that lets you query your database using plain English.  
-Powered by **Google Gemini** for SQL generation and **MySQL RDS** for execution.  
+A conversational **SQL Assistant** built with **Streamlit** that allows you to query your database using **plain English**.  
+Powered by **Google Gemini** for SQL generation and **AWS MySQL RDS** for execution.  
 
 ---
 
 ## 🚀 Features
-- 📝 **Natural Language to SQL** – Ask questions in plain English, get valid SQL queries.
-- 🗂 **Table Awareness** – Displays which tables were used in the query.
-- 📊 **Interactive Results** – View query results directly inside Streamlit.
-- 💬 **Chat UI** – Conversation-style interface using `st.chat_input` & `st.chat_message`.
-- 🔄 **Session Memory** – Keeps a history of your queries and answers.
+- 📝 **Natural Language → SQL** – Ask questions in English, get valid SQL instantly.  
+- 🗂 **Schema Awareness** – Detects and shows which tables are being used.  
+- 📊 **Interactive Results** – Clean, tabular output of query results in the app.  
+- 💬 **Chat UI** – Conversation-style interface with `st.chat_input` & `st.chat_message`.  
+- 🔄 **Session Memory** – Remembers your past queries and answers in the chat flow.  
+- ⚡ **Safe Execution** – Enforces **read-only queries** and blocks destructive operations.  
+- 📦 **Query Cache** – Stores past queries for faster retrieval and offline fallback.  
 
 ---
 
@@ -20,12 +22,15 @@ Powered by **Google Gemini** for SQL generation and **MySQL RDS** for execution.
 ![Chat UI Example](img1.png)
 
 ### 📊 Auto-generated SQL & Results
-![SQL + Results](img4.png)
+![SQL + Results](img4.png)  
 ![SQL + Results](img3.png)
 
 ### 🗂 Tables Used
 ![Tables Used](img2.png)
 
+---
+## 🏗️ System Architecture
+![System Architecture](img5.png)
 ---
 
 ## 🛠️ Tech Stack
