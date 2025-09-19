@@ -12,37 +12,84 @@ from langchain_community.vectorstores import FAISS
 from langchain_community.docstore.document import Document
 from langchain_community.utilities import SQLDatabase
 
-# --- Setup ---
+# --- Setup --- 
 os.environ["GOOGLE_API_KEY"] = os.getenv(
     "GOOGLE_API_KEY",
-    "API KEY"
+    ""
 )
 
-# MySQL RDS
-password = quote_plus()
-db_uri = f""
+# -------------------
+# DB CONFIGURATION
+# -------------------
+DB_TYPE = "mysql"   # change to "mysql" if needed
+
+if DB_TYPE == "athena":
+    # ✅ Hard-coded Athena creds
+    aws_access_key_id = ""
+    aws_secret_access_key = ""
+    region = ""
+    output_location = ""
+    database = ""
+    workgroup = ""
+
+    db_uri = (
+        f"awsathena+rest://{aws_access_key_id}:{aws_secret_access_key}@"
+        f"athena.{region}.amazonaws.com:443/{database}"
+        f"?s3_staging_dir={output_location}&work_group={workgroup}"
+    )
+
+elif DB_TYPE == "mysql":
+    # ✅ MySQL creds (example)
+    password = quote_plus("")
+    db_uri = f""
+
+else:
+    raise ValueError("Unsupported DB_TYPE. Use 'mysql' or 'athena'.")
+
+# --- DB Wrapper ---
 db = SQLDatabase.from_uri(db_uri)
 
-# Extract schema
-schema_text = db.get_table_info()
-schema_text_clean = re.sub(r"/\*.*?\*/", "", schema_text, flags=re.S)
-tables = schema_text_clean.split("\n\n\n")
+# --- Extract schema ---
+# schema_text = db.get_table_info()
+# schema_text_clean = re.sub(r"/\*.*?\*/", "", schema_text, flags=re.S)
+# tables = schema_text_clean.split("\n\n\n")
 
+# table_docs = []
+# for t in tables:
+#     match = re.search(r"CREATE TABLE\s+`?(\w+)`?", t, re.IGNORECASE)
+#     if match:
+#         table_name = match.group(1)
+#         doc = Document(page_content=t.strip(), metadata={"table": table_name})
+#         table_docs.append(doc)
+
+# print(f"📚 Found {len(table_docs)} tables in schema")
+
+try:
+    with db._engine.connect() as conn:
+        result = conn.execute(text("SHOW TABLES"))
+        tables_list = [row[0] for row in result.fetchall()]
+except Exception as e:
+    print(f"⚠️ Failed to list tables: {e}")
+    tables_list = []
+
+schema_text = ""
 table_docs = []
-for t in tables:
-    match = re.search(r"CREATE TABLE\s+`?(\w+)`?", t, re.IGNORECASE)
-    if match:
-        table_name = match.group(1)
-        doc = Document(page_content=t.strip(), metadata={"table": table_name})
+for table in tables_list:
+    try:
+        info = db.get_table_info([table])  # ✅ ask for just one table
+        schema_text += f"\n\n{info}"
+        doc = Document(page_content=info.strip(), metadata={"table": table})
         table_docs.append(doc)
+    except Exception as e:
+        print(f"⚠️ Skipped table {table}: {e}")
 
-print(f"📚 Found {len(table_docs)} tables in schema")
+print(f"📚 Final usable tables in schema: {len(table_docs)}")
 
-# --- Embeddings + FAISS Setup (for schema retrieval only) ---
+# --- Embeddings (for schema retrieval only) ---
 # try:
 #     embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
 #     table_index = FAISS.from_documents(table_docs, embeddings)
-#     print("✅ Embeddings + FAISS index built successfully (for schema)")
+#     print("✅ Embeddings built successfully (for schema)")
 # except Exception as e:
 #     print(f"⚠️ Embeddings initialization failed: {e}")
 #     embeddings = None
@@ -56,7 +103,8 @@ try:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    # embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+    embeddings = GoogleGenerativeAIEmbeddings(model="gemini-embedding-exp-03-07")
     table_index = FAISS.from_documents(table_docs, embeddings)
     print("✅ Embeddings + FAISS index built successfully (for schema)")
 
@@ -65,10 +113,9 @@ except Exception as e:
     embeddings = None
     table_index = None
 
-# --- Persistent Exact Cache Setup ---
+# --- Persistent Cache ---
 CACHE_DIR = "cache_data"
 os.makedirs(CACHE_DIR, exist_ok=True)
-
 CACHE_FILE = os.path.join(CACHE_DIR, "query_cache.pkl")
 
 if os.path.exists(CACHE_FILE):
@@ -100,7 +147,7 @@ llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash", temperature=0)
 history = []
 current_sql = None
 
-# --- Cache Lookup ---
+# --- Cache Helpers ---
 def cache_lookup(query: str):
     if query in query_cache:
         print("🔄 Serving from Exact-Cache")
@@ -113,7 +160,7 @@ def cache_add(query: str, sql: str):
         pickle.dump(query_cache, f)
 
 # --- Schema Retrieval ---
-def find_relevant_schema(user_query, threshold=0.60, top_k=5):
+def find_relevant_schema(user_query, threshold=0.55, top_k=5):
     if not table_index:
         return "", []
     
@@ -136,46 +183,83 @@ def clean_sql(sql: str) -> str:
     if not sql:
         return sql
     sql = sql.strip()
+    # remove markdown fences
     sql = re.sub(r"^```sql\s*", "", sql, flags=re.IGNORECASE | re.MULTILINE)
     sql = re.sub(r"```$", "", sql, flags=re.MULTILINE)
+
+    # ✅ Replace "string" with 'string' if inside WHERE/VALUES context
+    # but leave "column" untouched
+    sql = re.sub(
+        r"=\s*\"([^\"]+)\"",
+        r"= '\1'",
+        sql
+    )
+    sql = re.sub(
+        r"IN\s*\(([^)]+)\)",
+        lambda m: "IN (" + m.group(1).replace('"', "'") + ")",
+        sql,
+        flags=re.IGNORECASE
+    )
+
     return sql.strip()
 
 def run_sql(sql: str, limit: int = 20):
     if not sql:
         return None
 
-    sql = clean_sql(sql)
+    sql = clean_sql(sql).strip()
+    first_word = sql.split()[0].upper()
+
+    # ✅ Allow only safe read-only statements
+    allowed_prefixes = ("SELECT", "SHOW", "DESCRIBE", "EXPLAIN")
+
+    # ❌ Disallowed keywords (schema or data-changing)
+    blocked_keywords = [
+        "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER", "DROP", "TRUNCATE",
+        "REPLACE", "MERGE", "GRANT", "REVOKE", "WITH"  # block CTEs too
+    ]
+
+    if first_word not in allowed_prefixes or any(
+        kw in sql.upper().split() for kw in blocked_keywords
+    ):
+        print(f"⛔ Query blocked: '{first_word}' or forbidden keyword detected.")
+        print("⚠️ Only read-only queries (SELECT/SHOW/DESCRIBE/EXPLAIN) are allowed.")
+        return None
 
     try:
         with db._engine.connect() as conn:
             result = conn.execute(text(sql))
-            rows = result.fetchmany(limit)
-            columns = result.keys()
-            data = [dict(zip(columns, row)) for row in rows]
-            
-            if data:
-                print(tabulate(data, headers="keys", tablefmt="grid"))
+            if getattr(result, "returns_rows", False):
+                rows = result.fetchmany(limit)
+                columns = result.keys()
+                data = [dict(zip(columns, row)) for row in rows]
+
+                if data:
+                    print(tabulate(data, headers="keys", tablefmt="grid"))
+                else:
+                    print("⚠️ No results returned")
+
+                return data
             else:
-                print("⚠️ No results returned")
-
-            return data
-
+                print("✅ Read-only query executed (no rows).")
+                return []
     except Exception as e:
         print(f"⚠️ SQL execution failed: {e}\n[SQL: {sql}]")
         return None
 
-# --- Main Ask Function ---
 def ask(query: str):
     global current_sql
 
-    context, tables_used = find_relevant_schema(query, threshold=0.60 , top_k=5)
+    context, tables_used = find_relevant_schema(query, threshold=0.55 , top_k=5)
     sql, source = None, None
 
+    # 1. Try cache first
     cached, cache_source = cache_lookup(query)
     if cached:
         sql = cached
         source = cache_source
     else:
+        # 2. Try Gemini
         try:
             if current_sql is None:
                 result = (base_prompt | llm).invoke({
@@ -213,6 +297,7 @@ def ask(query: str):
     })
     return sql, tables_used
 
+
 # --- Interactive Chat Loop ---
 def chat_loop():
     print("\n💬 SQL Assistant Chat (type 'exit' to quit)\n")
@@ -234,3 +319,4 @@ def chat_loop():
 
 if __name__ == "__main__":
     chat_loop()
+
